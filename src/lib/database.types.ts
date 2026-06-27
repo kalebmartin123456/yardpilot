@@ -42,6 +42,7 @@ export type Database = {
           quoted_price?: number | null
           status?: LeadStatus
         }
+        Relationships: []
       }
       profiles: {
         Row: {
@@ -66,6 +67,46 @@ export type Database = {
           stripe_subscription_id?: string | null
           subscription_status?: string
         }
+        Relationships: []
+      }
+      public_quote_leads: {
+        Row: {
+          id: string
+          business_slug: string
+          customer_name: string
+          service: string
+          property_details: string
+          timeline: string
+          budget: string | null
+          notes: string | null
+          quoted_price: number | null
+          status: LeadStatus
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          business_slug: string
+          customer_name: string
+          service: string
+          property_details: string
+          timeline?: string
+          budget?: string | null
+          notes?: string | null
+          quoted_price?: number | null
+          status?: LeadStatus
+          created_at?: string
+        }
+        Update: {
+          customer_name?: string
+          service?: string
+          property_details?: string
+          timeline?: string
+          budget?: string | null
+          notes?: string | null
+          quoted_price?: number | null
+          status?: LeadStatus
+        }
+        Relationships: []
       }
     }
     Views: Record<string, never>

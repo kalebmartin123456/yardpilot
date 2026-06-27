@@ -14,14 +14,17 @@ import {
   Sparkles,
   UserRound,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
-import { hasSupabaseConfig } from './lib/supabase'
+import type { Database as SupabaseDatabase } from './lib/database.types'
+import { hasSupabaseConfig, supabase } from './lib/supabase'
 
 type LeadStatus = 'New' | 'Quoted' | 'Followed up' | 'Won'
+type PersistenceMode = 'Browser demo' | 'Supabase live' | 'Supabase unavailable'
+type QuoteLeadRow = SupabaseDatabase['public']['Tables']['public_quote_leads']['Row']
 
 type Lead = {
-  id: number
+  id: string
   name: string
   service: string
   property: string
@@ -41,6 +44,7 @@ type LeadForm = {
 }
 
 const storageKey = 'yardpilot-leads'
+const businessSlug = 'greenstack'
 
 const servicePrices: Record<string, number> = {
   'Weekly mowing': 55,
@@ -61,7 +65,7 @@ const emptyLeadForm: LeadForm = {
 
 const starterLeads: Lead[] = [
   {
-    id: 1,
+    id: 'starter-1',
     name: 'Maya Chen',
     service: 'Spring cleanup',
     property: '0.25 acre corner lot',
@@ -71,7 +75,7 @@ const starterLeads: Lead[] = [
     status: 'Quoted',
   },
   {
-    id: 2,
+    id: 'starter-2',
     name: 'Jordan Price',
     service: 'Weekly mowing',
     property: 'Small front and back yard',
@@ -81,7 +85,7 @@ const starterLeads: Lead[] = [
     status: 'New',
   },
   {
-    id: 3,
+    id: 'starter-3',
     name: 'Ari Lopez',
     service: 'Mulch install',
     property: 'Six front-yard beds',
@@ -116,7 +120,8 @@ function readStoredLeads() {
     }
 
     const parsed = JSON.parse(saved) as Lead[]
-    return parsed.length > 0 ? parsed : starterLeads
+    const normalized = parsed.map((lead) => ({ ...lead, id: String(lead.id) }))
+    return normalized.length > 0 ? normalized : starterLeads
   } catch {
     return starterLeads
   }
@@ -124,6 +129,80 @@ function readStoredLeads() {
 
 function saveStoredLeads(nextLeads: Lead[]) {
   window.localStorage.setItem(storageKey, JSON.stringify(nextLeads))
+}
+
+function mapQuoteLeadRow(row: QuoteLeadRow): Lead {
+  return {
+    id: row.id,
+    name: row.customer_name,
+    service: row.service,
+    property: row.property_details,
+    timeline: row.timeline,
+    budget: row.budget ?? 'Not provided',
+    notes: row.notes ?? 'No extra notes yet.',
+    status: row.status === 'Lost' ? 'New' : row.status,
+  }
+}
+
+async function loadSupabaseLeads() {
+  if (!supabase) {
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('public_quote_leads')
+    .select('*')
+    .eq('business_slug', businessSlug)
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    throw error
+  }
+
+  return data.map(mapQuoteLeadRow)
+}
+
+async function createSupabaseLead(lead: Lead) {
+  if (!supabase) {
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('public_quote_leads')
+    .insert({
+      business_slug: businessSlug,
+      customer_name: lead.name,
+      service: lead.service,
+      property_details: lead.property,
+      timeline: lead.timeline,
+      budget: lead.budget,
+      notes: lead.notes,
+      quoted_price: estimateLead(lead),
+      status: lead.status,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  return mapQuoteLeadRow(data)
+}
+
+async function updateSupabaseLeadStatus(id: string, status: LeadStatus) {
+  if (!supabase || id.startsWith('starter-') || id.startsWith('local-')) {
+    return
+  }
+
+  const { error } = await supabase
+    .from('public_quote_leads')
+    .update({ status })
+    .eq('id', id)
+
+  if (error) {
+    throw error
+  }
 }
 
 function App() {
@@ -138,7 +217,10 @@ function App() {
 
 function OperatorDashboard() {
   const [leads, setLeads] = useState<Lead[]>(readStoredLeads)
-  const [selectedId, setSelectedId] = useState(() => readStoredLeads()[0]?.id ?? 1)
+  const [selectedId, setSelectedId] = useState(() => readStoredLeads()[0]?.id ?? 'starter-1')
+  const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>(
+    hasSupabaseConfig ? 'Supabase live' : 'Browser demo',
+  )
   const [subscriptionStatus, setSubscriptionStatus] = useState<'Trial' | 'Pro active'>('Trial')
   const [calendarConnected, setCalendarConnected] = useState(false)
   const [bookingStatus, setBookingStatus] = useState('Ready to book once the customer accepts.')
@@ -152,18 +234,47 @@ function OperatorDashboard() {
     (leads.filter((lead) => lead.status === 'Won').length / leads.length) * 100,
   )
 
+  useEffect(() => {
+    let ignore = false
+
+    async function loadLeads() {
+      if (!hasSupabaseConfig) {
+        return
+      }
+
+      try {
+        const remoteLeads = await loadSupabaseLeads()
+        if (!ignore && remoteLeads && remoteLeads.length > 0) {
+          setLeads(remoteLeads)
+          setSelectedId(remoteLeads[0].id)
+          setPersistenceMode('Supabase live')
+        }
+      } catch {
+        if (!ignore) {
+          setPersistenceMode('Supabase unavailable')
+        }
+      }
+    }
+
+    void loadLeads()
+
+    return () => {
+      ignore = true
+    }
+  }, [])
+
   function updateLeads(nextLeads: Lead[]) {
     setLeads(nextLeads)
     saveStoredLeads(nextLeads)
   }
 
-  function createLead() {
+  async function createLead() {
     if (!form.name.trim() || !form.property.trim()) {
       return
     }
 
     const nextLead: Lead = {
-      id: Date.now(),
+      id: `local-${Date.now()}`,
       name: form.name,
       service: form.service,
       property: form.property,
@@ -173,12 +284,25 @@ function OperatorDashboard() {
       status: 'New',
     }
 
-    updateLeads([nextLead, ...leads])
-    setSelectedId(nextLead.id)
+    try {
+      const remoteLead = await createSupabaseLead(nextLead)
+      const savedLead = remoteLead ?? nextLead
+      updateLeads([savedLead, ...leads])
+      setSelectedId(savedLead.id)
+      setPersistenceMode(remoteLead ? 'Supabase live' : 'Browser demo')
+    } catch {
+      updateLeads([nextLead, ...leads])
+      setSelectedId(nextLead.id)
+      setPersistenceMode('Supabase unavailable')
+    }
+
     setForm(emptyLeadForm)
   }
 
-  function markQuoted() {
+  async function markQuoted() {
+    await updateSupabaseLeadStatus(selectedLead.id, 'Quoted').catch(() => {
+      setPersistenceMode('Supabase unavailable')
+    })
     updateLeads(
       leads.map((lead) =>
         lead.id === selectedLead.id ? { ...lead, status: 'Quoted' } : lead,
@@ -194,12 +318,15 @@ function OperatorDashboard() {
     setCalendarConnected(true)
   }
 
-  function bookLead() {
+  async function bookLead() {
     if (!calendarConnected) {
       setBookingStatus('Connect Google Calendar before creating a booking event.')
       return
     }
 
+    await updateSupabaseLeadStatus(selectedLead.id, 'Won').catch(() => {
+      setPersistenceMode('Supabase unavailable')
+    })
     updateLeads(
       leads.map((lead) =>
         lead.id === selectedLead.id ? { ...lead, status: 'Won' } : lead,
@@ -293,8 +420,8 @@ function OperatorDashboard() {
             <p className="eyebrow">Live capability</p>
             <h3>Share this quote page with homeowners.</h3>
             <p>
-              Submissions from this page are captured into the dashboard on this
-              browser today. Supabase will make them shared across devices next.
+              Submissions are captured into the dashboard. Storage mode:{' '}
+              <strong>{persistenceMode}</strong>.
             </p>
           </div>
           <a className="primary-action" href={quotePageUrl}>
@@ -389,7 +516,7 @@ function OperatorDashboard() {
                 bookings, and pricing rules behind row-level security.
               </p>
             </div>
-            <strong>{hasSupabaseConfig ? 'Configured' : 'Needs env vars'}</strong>
+            <strong>{persistenceMode}</strong>
             <button className="secondary-action full" type="button">
               Persist leads
             </button>
@@ -482,6 +609,9 @@ function OperatorDashboard() {
 function QuoteRequestPage() {
   const [form, setForm] = useState<LeadForm>(emptyLeadForm)
   const [submittedLead, setSubmittedLead] = useState<Lead | null>(null)
+  const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>(
+    hasSupabaseConfig ? 'Supabase live' : 'Browser demo',
+  )
 
   const previewPrice = estimateLead({
     service: form.service,
@@ -489,13 +619,13 @@ function QuoteRequestPage() {
     notes: form.notes,
   })
 
-  function submitQuoteRequest() {
+  async function submitQuoteRequest() {
     if (!form.name.trim() || !form.property.trim()) {
       return
     }
 
     const nextLead: Lead = {
-      id: Date.now(),
+      id: `local-${Date.now()}`,
       name: form.name,
       service: form.service,
       property: form.property,
@@ -504,9 +634,20 @@ function QuoteRequestPage() {
       notes: form.notes || 'No extra notes yet.',
       status: 'New',
     }
-    const savedLeads = [nextLead, ...readStoredLeads()]
-    saveStoredLeads(savedLeads)
-    setSubmittedLead(nextLead)
+
+    try {
+      const remoteLead = await createSupabaseLead(nextLead)
+      const savedLead = remoteLead ?? nextLead
+      const savedLeads = [savedLead, ...readStoredLeads()]
+      saveStoredLeads(savedLeads)
+      setSubmittedLead(savedLead)
+      setPersistenceMode(remoteLead ? 'Supabase live' : 'Browser demo')
+    } catch {
+      const savedLeads = [nextLead, ...readStoredLeads()]
+      saveStoredLeads(savedLeads)
+      setSubmittedLead(nextLead)
+      setPersistenceMode('Supabase unavailable')
+    }
   }
 
   return (
@@ -541,6 +682,7 @@ function QuoteRequestPage() {
                 Your {submittedLead.service.toLowerCase()} request is ready for review.
                 A realistic starting estimate is ${estimateLead(submittedLead)}.
               </p>
+              <p className="storage-note">Storage mode: {persistenceMode}</p>
               <a className="secondary-action" href="/">
                 View operator dashboard
               </a>

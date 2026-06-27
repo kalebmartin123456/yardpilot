@@ -91,6 +91,12 @@ Restart the dev server after changing env vars.
 
 The browser app may use the publishable key. Do not put the Supabase secret key or service role key in any `VITE_` variable. Those belong only in server-side endpoints for Stripe webhooks, Google OAuth callbacks, and privileged database writes.
 
+The live quote page now tries Supabase first:
+
+- If `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` are configured and `supabase/schema.sql` has been run, `/quote/greenstack` writes leads to `public_quote_leads`.
+- If Supabase is not configured yet, the app falls back to browser storage so the demo still works.
+- The dashboard shows the current storage mode: `Supabase live`, `Browser demo`, or `Supabase unavailable`.
+
 ## Stripe Subscription Plan
 
 Use Stripe Checkout for subscriptions first.
@@ -148,6 +154,7 @@ Minimum tables:
 - `profiles`: auth user, business name, Stripe customer ID, subscription status.
 - `calendar_connections`: user ID, provider, encrypted refresh token, selected calendar ID.
 - `leads`: user ID, customer, property details, service, notes, status, quoted price.
+- `public_quote_leads`: unauthenticated homeowner quote requests for the public `/quote/greenstack` demo flow.
 - `bookings`: lead ID, start time, end time, Google event ID, booking status.
 - `pricing_rules`: user ID, service name, base price, property and complexity fees.
 

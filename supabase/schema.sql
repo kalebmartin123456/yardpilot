@@ -55,11 +55,27 @@ create table if not exists public.pricing_rules (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.public_quote_leads (
+  id uuid primary key default gen_random_uuid(),
+  business_slug text not null,
+  customer_name text not null,
+  service text not null,
+  property_details text not null,
+  timeline text not null default 'Flexible',
+  budget text,
+  notes text,
+  quoted_price integer,
+  status text not null default 'New'
+    check (status in ('New', 'Quoted', 'Followed up', 'Won', 'Lost')),
+  created_at timestamptz not null default now()
+);
+
 alter table public.profiles enable row level security;
 alter table public.leads enable row level security;
 alter table public.calendar_connections enable row level security;
 alter table public.bookings enable row level security;
 alter table public.pricing_rules enable row level security;
+alter table public.public_quote_leads enable row level security;
 
 create policy "Users can read own profile"
   on public.profiles for select
@@ -88,6 +104,19 @@ create policy "Users can manage own pricing rules"
   on public.pricing_rules for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+create policy "Anyone can submit public quote leads"
+  on public.public_quote_leads for insert
+  with check (business_slug <> '' and customer_name <> '' and property_details <> '');
+
+create policy "Anyone can read public quote leads for demo"
+  on public.public_quote_leads for select
+  using (business_slug = 'greenstack');
+
+create policy "Anyone can update public quote lead status for demo"
+  on public.public_quote_leads for update
+  using (business_slug = 'greenstack')
+  with check (business_slug = 'greenstack');
 
 create or replace function public.handle_new_user()
 returns trigger

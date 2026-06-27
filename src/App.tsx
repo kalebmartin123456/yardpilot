@@ -1,7 +1,7 @@
 import {
   ArrowRight,
-  CalendarPlus,
   CalendarClock,
+  CalendarPlus,
   Check,
   ClipboardList,
   CreditCard,
@@ -29,6 +29,34 @@ type Lead = {
   budget: string
   notes: string
   status: LeadStatus
+}
+
+type LeadForm = {
+  name: string
+  service: string
+  property: string
+  timeline: string
+  budget: string
+  notes: string
+}
+
+const storageKey = 'yardpilot-leads'
+
+const servicePrices: Record<string, number> = {
+  'Weekly mowing': 55,
+  'Spring cleanup': 375,
+  'Mulch install': 780,
+  'Aeration and overseeding': 240,
+  'Small landscape install': 1250,
+}
+
+const emptyLeadForm: LeadForm = {
+  name: '',
+  service: 'Spring cleanup',
+  property: '',
+  timeline: '',
+  budget: '',
+  notes: '',
 }
 
 const starterLeads: Lead[] = [
@@ -64,40 +92,70 @@ const starterLeads: Lead[] = [
   },
 ]
 
-const servicePrices: Record<string, number> = {
-  'Weekly mowing': 55,
-  'Spring cleanup': 375,
-  'Mulch install': 780,
-  'Aeration and overseeding': 240,
-  'Small landscape install': 1250,
+function estimateLead(lead: Pick<Lead, 'service' | 'property' | 'notes'>) {
+  const base = servicePrices[lead.service] ?? 225
+  const largerProperty = /acre|corner|large|six|beds|slope|back yard|backyard/i.test(
+    lead.property,
+  )
+  const complexityFee = /haul|leaf|weed|barrier|overgrown|edging|fence|cleanup/i.test(
+    lead.notes,
+  )
+
+  return base + (largerProperty ? 125 : 0) + (complexityFee ? 95 : 0)
+}
+
+function readStoredLeads() {
+  if (typeof window === 'undefined') {
+    return starterLeads
+  }
+
+  try {
+    const saved = window.localStorage.getItem(storageKey)
+    if (!saved) {
+      return starterLeads
+    }
+
+    const parsed = JSON.parse(saved) as Lead[]
+    return parsed.length > 0 ? parsed : starterLeads
+  } catch {
+    return starterLeads
+  }
+}
+
+function saveStoredLeads(nextLeads: Lead[]) {
+  window.localStorage.setItem(storageKey, JSON.stringify(nextLeads))
 }
 
 function App() {
-  const [leads, setLeads] = useState<Lead[]>(starterLeads)
-  const [selectedId, setSelectedId] = useState(1)
+  const isQuotePage = window.location.pathname.startsWith('/quote')
+
+  if (isQuotePage) {
+    return <QuoteRequestPage />
+  }
+
+  return <OperatorDashboard />
+}
+
+function OperatorDashboard() {
+  const [leads, setLeads] = useState<Lead[]>(readStoredLeads)
+  const [selectedId, setSelectedId] = useState(() => readStoredLeads()[0]?.id ?? 1)
   const [subscriptionStatus, setSubscriptionStatus] = useState<'Trial' | 'Pro active'>('Trial')
   const [calendarConnected, setCalendarConnected] = useState(false)
   const [bookingStatus, setBookingStatus] = useState('Ready to book once the customer accepts.')
-  const [form, setForm] = useState({
-    name: '',
-    service: 'Spring cleanup',
-    property: '',
-    timeline: '',
-    budget: '',
-    notes: '',
-  })
+  const [form, setForm] = useState<LeadForm>(emptyLeadForm)
 
   const selectedLead = leads.find((lead) => lead.id === selectedId) ?? leads[0]
-  const estimatedPrice = useMemo(() => {
-    const base = servicePrices[selectedLead.service] ?? 225
-    const largerProperty = /acre|corner|large|six|beds|slope|back yard|backyard/i.test(selectedLead.property)
-    const complexityFee = /haul|leaf|weed|barrier|overgrown|edging|fence|cleanup/i.test(selectedLead.notes)
-    return base + (largerProperty ? 125 : 0) + (complexityFee ? 95 : 0)
-  }, [selectedLead])
+  const estimatedPrice = useMemo(() => estimateLead(selectedLead), [selectedLead])
+  const quotePageUrl = `${window.location.origin}/quote/greenstack`
 
   const closeRate = Math.round(
     (leads.filter((lead) => lead.status === 'Won').length / leads.length) * 100,
   )
+
+  function updateLeads(nextLeads: Lead[]) {
+    setLeads(nextLeads)
+    saveStoredLeads(nextLeads)
+  }
 
   function createLead() {
     if (!form.name.trim() || !form.property.trim()) {
@@ -115,21 +173,14 @@ function App() {
       status: 'New',
     }
 
-    setLeads((current) => [nextLead, ...current])
+    updateLeads([nextLead, ...leads])
     setSelectedId(nextLead.id)
-    setForm({
-      name: '',
-      service: 'Spring cleanup',
-      property: '',
-      timeline: '',
-      budget: '',
-      notes: '',
-    })
+    setForm(emptyLeadForm)
   }
 
   function markQuoted() {
-    setLeads((current) =>
-      current.map((lead) =>
+    updateLeads(
+      leads.map((lead) =>
         lead.id === selectedLead.id ? { ...lead, status: 'Quoted' } : lead,
       ),
     )
@@ -149,8 +200,8 @@ function App() {
       return
     }
 
-    setLeads((current) =>
-      current.map((lead) =>
+    updateLeads(
+      leads.map((lead) =>
         lead.id === selectedLead.id ? { ...lead, status: 'Won' } : lead,
       ),
     )
@@ -176,6 +227,7 @@ function App() {
           <a href="#workspace">Workspace</a>
           <a href="#pricing">Pricing</a>
           <a href="#launch">Launch</a>
+          <a href="/quote/greenstack">Quote page</a>
         </div>
         <button className="icon-button" type="button" aria-label="Send proposal">
           <Send size={18} />
@@ -192,12 +244,12 @@ function App() {
             without forcing them into a heavy CRM.
           </p>
           <div className="hero-actions">
-            <a className="primary-action" href="#workspace">
-              Try the workflow
+            <a className="primary-action" href={quotePageUrl}>
+              Open quote page
               <ArrowRight size={18} />
             </a>
-            <a className="secondary-action" href="#pricing">
-              See pricing
+            <a className="secondary-action" href="#workspace">
+              Try operator view
             </a>
           </div>
         </div>
@@ -236,6 +288,21 @@ function App() {
           <Metric icon={<Check size={18} />} label="Close rate" value={`${closeRate}%`} />
         </div>
 
+        <section className="quote-link-panel" aria-label="Shareable quote page">
+          <div>
+            <p className="eyebrow">Live capability</p>
+            <h3>Share this quote page with homeowners.</h3>
+            <p>
+              Submissions from this page are captured into the dashboard on this
+              browser today. Supabase will make them shared across devices next.
+            </p>
+          </div>
+          <a className="primary-action" href={quotePageUrl}>
+            Open /quote/greenstack
+            <ArrowRight size={18} />
+          </a>
+        </section>
+
         <div className="app-grid">
           <section className="panel intake-panel" aria-labelledby="intake-title">
             <div className="panel-title">
@@ -243,57 +310,7 @@ function App() {
               <h3 id="intake-title">Lead intake</h3>
             </div>
             <div className="form-grid">
-              <label>
-                Customer
-                <input
-                  value={form.name}
-                  onChange={(event) => setForm({ ...form, name: event.target.value })}
-                  placeholder="Sam Rivera"
-                />
-              </label>
-              <label>
-                Property
-                <input
-                  value={form.property}
-                  onChange={(event) => setForm({ ...form, property: event.target.value })}
-                  placeholder="0.25 acre lot with 4 beds"
-                />
-              </label>
-              <label>
-                Service
-                <select
-                  value={form.service}
-                  onChange={(event) => setForm({ ...form, service: event.target.value })}
-                >
-                  {Object.keys(servicePrices).map((service) => (
-                    <option key={service}>{service}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Timeline
-                <input
-                  value={form.timeline}
-                  onChange={(event) => setForm({ ...form, timeline: event.target.value })}
-                  placeholder="Tomorrow morning"
-                />
-              </label>
-              <label>
-                Budget
-                <input
-                  value={form.budget}
-                  onChange={(event) => setForm({ ...form, budget: event.target.value })}
-                  placeholder="$250"
-                />
-              </label>
-              <label className="wide">
-                Notes
-                <textarea
-                  value={form.notes}
-                  onChange={(event) => setForm({ ...form, notes: event.target.value })}
-                  placeholder="Leaf cleanup, edging, mulch color, gate access..."
-                />
-              </label>
+              <LeadFields form={form} setForm={setForm} />
             </div>
             <button className="primary-action full" type="button" onClick={createLead}>
               Add lead
@@ -453,12 +470,173 @@ function App() {
           </p>
         </div>
         <ol>
-          <li>Record a 60-second demo using this workflow.</li>
+          <li>Send the live quote page to one test homeowner.</li>
           <li>DM 100 local landscapers with a direct quote-page offer.</li>
           <li>Charge the first users after setup, not after perfection.</li>
         </ol>
       </section>
     </main>
+  )
+}
+
+function QuoteRequestPage() {
+  const [form, setForm] = useState<LeadForm>(emptyLeadForm)
+  const [submittedLead, setSubmittedLead] = useState<Lead | null>(null)
+
+  const previewPrice = estimateLead({
+    service: form.service,
+    property: form.property,
+    notes: form.notes,
+  })
+
+  function submitQuoteRequest() {
+    if (!form.name.trim() || !form.property.trim()) {
+      return
+    }
+
+    const nextLead: Lead = {
+      id: Date.now(),
+      name: form.name,
+      service: form.service,
+      property: form.property,
+      timeline: form.timeline || 'Flexible',
+      budget: form.budget || 'Not provided',
+      notes: form.notes || 'No extra notes yet.',
+      status: 'New',
+    }
+    const savedLeads = [nextLead, ...readStoredLeads()]
+    saveStoredLeads(savedLeads)
+    setSubmittedLead(nextLead)
+  }
+
+  return (
+    <main className="quote-page">
+      <section className="quote-hero">
+        <div className="quote-brand">
+          <span className="brand-mark">
+            <Sparkles size={18} />
+          </span>
+          <span>Greenstack Lawn Co.</span>
+        </div>
+        <div>
+          <p className="eyebrow">Fast landscaping quotes</p>
+          <h1>Tell us about your yard. Get a clean estimate fast.</h1>
+          <p>
+            Request mowing, cleanup, mulch, aeration, or a small install. Your
+            request goes straight into YardPilot so the operator can quote and book it.
+          </p>
+        </div>
+      </section>
+
+      <section className="quote-form-wrap">
+        <div className="quote-form-card">
+          {submittedLead ? (
+            <div className="success-state">
+              <div className="success-icon">
+                <Check size={26} />
+              </div>
+              <p className="eyebrow">Request received</p>
+              <h2>Thanks, {submittedLead.name}.</h2>
+              <p>
+                Your {submittedLead.service.toLowerCase()} request is ready for review.
+                A realistic starting estimate is ${estimateLead(submittedLead)}.
+              </p>
+              <a className="secondary-action" href="/">
+                View operator dashboard
+              </a>
+            </div>
+          ) : (
+            <>
+              <div className="panel-title">
+                <ClipboardList size={18} />
+                <h2>Quote request</h2>
+              </div>
+              <div className="form-grid">
+                <LeadFields form={form} setForm={setForm} />
+              </div>
+              <button className="primary-action full" type="button" onClick={submitQuoteRequest}>
+                Request quote
+                <ArrowRight size={18} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <aside className="quote-estimate-card">
+          <p className="eyebrow">Estimate preview</p>
+          <strong>${previewPrice}</strong>
+          <span>Starting estimate</span>
+          <p>
+            Final pricing depends on property access, debris volume, material choices,
+            and confirmed measurements.
+          </p>
+        </aside>
+      </section>
+    </main>
+  )
+}
+
+function LeadFields({
+  form,
+  setForm,
+}: {
+  form: LeadForm
+  setForm: (form: LeadForm) => void
+}) {
+  return (
+    <>
+      <label>
+        Customer
+        <input
+          value={form.name}
+          onChange={(event) => setForm({ ...form, name: event.target.value })}
+          placeholder="Sam Rivera"
+        />
+      </label>
+      <label>
+        Property
+        <input
+          value={form.property}
+          onChange={(event) => setForm({ ...form, property: event.target.value })}
+          placeholder="0.25 acre lot with 4 beds"
+        />
+      </label>
+      <label>
+        Service
+        <select
+          value={form.service}
+          onChange={(event) => setForm({ ...form, service: event.target.value })}
+        >
+          {Object.keys(servicePrices).map((service) => (
+            <option key={service}>{service}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Timeline
+        <input
+          value={form.timeline}
+          onChange={(event) => setForm({ ...form, timeline: event.target.value })}
+          placeholder="Tomorrow morning"
+        />
+      </label>
+      <label>
+        Budget
+        <input
+          value={form.budget}
+          onChange={(event) => setForm({ ...form, budget: event.target.value })}
+          placeholder="$450"
+        />
+      </label>
+      <label className="wide">
+        Notes
+        <textarea
+          value={form.notes}
+          onChange={(event) => setForm({ ...form, notes: event.target.value })}
+          placeholder="Leaf cleanup, edging, mulch color, gate access..."
+        />
+      </label>
+    </>
   )
 }
 

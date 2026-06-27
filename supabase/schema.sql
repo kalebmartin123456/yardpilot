@@ -3,11 +3,23 @@ create extension if not exists "pgcrypto";
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   business_name text,
+  business_slug text,
   stripe_customer_id text,
   stripe_subscription_id text,
   subscription_status text not null default 'trial',
   created_at timestamptz not null default now()
 );
+
+alter table public.profiles
+  add column if not exists business_slug text;
+
+update public.profiles
+set business_slug = 'operator-' || left(id::text, 6)
+where business_slug is null or business_slug = '';
+
+create unique index if not exists profiles_business_slug_key
+  on public.profiles (business_slug)
+  where business_slug is not null;
 
 create table if not exists public.leads (
   id uuid primary key default gen_random_uuid(),
@@ -79,6 +91,7 @@ alter table public.public_quote_leads enable row level security;
 
 drop policy if exists "Users can read own profile" on public.profiles;
 drop policy if exists "Users can update own profile" on public.profiles;
+drop policy if exists "Users can create own profile" on public.profiles;
 drop policy if exists "Users can manage own leads" on public.leads;
 drop policy if exists "Users can manage own calendar connections" on public.calendar_connections;
 drop policy if exists "Users can manage own bookings" on public.bookings;
@@ -94,6 +107,10 @@ create policy "Users can read own profile"
 create policy "Users can update own profile"
   on public.profiles for update
   using (auth.uid() = id);
+
+create policy "Users can create own profile"
+  on public.profiles for insert
+  with check (auth.uid() = id);
 
 create policy "Users can manage own leads"
   on public.leads for all
@@ -121,12 +138,30 @@ create policy "Anyone can submit public quote leads"
 
 create policy "Anyone can read public quote leads for demo"
   on public.public_quote_leads for select
-  using (business_slug = 'greenstack');
+  using (
+    exists (
+      select 1 from public.profiles
+      where profiles.id = auth.uid()
+        and profiles.business_slug = public_quote_leads.business_slug
+    )
+  );
 
 create policy "Anyone can update public quote lead status for demo"
   on public.public_quote_leads for update
-  using (business_slug = 'greenstack')
-  with check (business_slug = 'greenstack');
+  using (
+    exists (
+      select 1 from public.profiles
+      where profiles.id = auth.uid()
+        and profiles.business_slug = public_quote_leads.business_slug
+    )
+  )
+  with check (
+    exists (
+      select 1 from public.profiles
+      where profiles.id = auth.uid()
+        and profiles.business_slug = public_quote_leads.business_slug
+    )
+  );
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -135,8 +170,15 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id)
-  values (new.id)
+  insert into public.profiles (id, business_name, business_slug)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'business_name', split_part(new.email, '@', 1) || ' Lawn Co.'),
+    coalesce(
+      nullif(regexp_replace(lower(new.raw_user_meta_data ->> 'business_slug'), '[^a-z0-9]+', '-', 'g'), ''),
+      regexp_replace(lower(split_part(new.email, '@', 1)), '[^a-z0-9]+', '-', 'g') || '-' || left(new.id::text, 6)
+    )
+  )
   on conflict (id) do nothing;
   return new;
 end;

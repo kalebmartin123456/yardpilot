@@ -48,6 +48,7 @@ export type Database = {
         Row: {
           id: string
           business_name: string | null
+          business_slug: string | null
           stripe_customer_id: string | null
           stripe_subscription_id: string | null
           subscription_status: string
@@ -56,6 +57,7 @@ export type Database = {
         Insert: {
           id: string
           business_name?: string | null
+          business_slug?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
           subscription_status?: string
@@ -63,6 +65,7 @@ export type Database = {
         }
         Update: {
           business_name?: string | null
+          business_slug?: string
           stripe_customer_id?: string | null
           stripe_subscription_id?: string | null
           subscription_status?: string

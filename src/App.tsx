@@ -1,13 +1,17 @@
+import type { Session } from '@supabase/supabase-js'
 import {
   ArrowRight,
   CalendarClock,
   CalendarPlus,
   Check,
   ClipboardList,
+  Copy,
   CreditCard,
   Database,
   DollarSign,
   Link2,
+  LockKeyhole,
+  LogOut,
   Mail,
   MessageSquareText,
   Send,
@@ -22,6 +26,7 @@ import { hasSupabaseConfig, supabase } from './lib/supabase'
 type LeadStatus = 'New' | 'Quoted' | 'Followed up' | 'Won'
 type PersistenceMode = 'Browser demo' | 'Supabase live' | 'Supabase unavailable'
 type QuoteLeadRow = SupabaseDatabase['public']['Tables']['public_quote_leads']['Row']
+type ProfileRow = SupabaseDatabase['public']['Tables']['profiles']['Row']
 
 type Lead = {
   id: string
@@ -43,8 +48,13 @@ type LeadForm = {
   notes: string
 }
 
+type ProfileForm = {
+  businessName: string
+  businessSlug: string
+}
+
 const storageKey = 'yardpilot-leads'
-const businessSlug = 'greenstack'
+const fallbackBusinessSlug = 'greenstack'
 
 const servicePrices: Record<string, number> = {
   'Weekly mowing': 55,
@@ -96,6 +106,17 @@ const starterLeads: Lead[] = [
   },
 ]
 
+const emptySelectedLead: Lead = {
+  id: 'empty',
+  name: 'New lead',
+  service: 'Spring cleanup',
+  property: 'No property selected yet',
+  timeline: 'Flexible',
+  budget: 'Not provided',
+  notes: 'Share your quote page or add a lead to start.',
+  status: 'New',
+}
+
 function estimateLead(lead: Pick<Lead, 'service' | 'property' | 'notes'>) {
   const base = servicePrices[lead.service] ?? 225
   const largerProperty = /acre|corner|large|six|beds|slope|back yard|backyard/i.test(
@@ -106,6 +127,28 @@ function estimateLead(lead: Pick<Lead, 'service' | 'property' | 'notes'>) {
   )
 
   return base + (largerProperty ? 125 : 0) + (complexityFee ? 95 : 0)
+}
+
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 42)
+}
+
+function formatBusinessName(slug: string) {
+  return `${slug
+    .split('-')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Greenstack'} Lawn Co.`
+}
+
+function getQuoteSlug() {
+  const [, quotePath] = window.location.pathname.split('/quote/')
+  return slugify(quotePath?.split('/')[0] ?? fallbackBusinessSlug) || fallbackBusinessSlug
 }
 
 function readStoredLeads() {
@@ -144,7 +187,7 @@ function mapQuoteLeadRow(row: QuoteLeadRow): Lead {
   }
 }
 
-async function loadSupabaseLeads() {
+async function loadSupabaseLeads(businessSlug: string) {
   if (!supabase) {
     return null
   }
@@ -162,36 +205,48 @@ async function loadSupabaseLeads() {
   return data.map(mapQuoteLeadRow)
 }
 
-async function createSupabaseLead(lead: Lead) {
+async function createSupabaseLead(lead: Lead, businessSlug: string, returnSavedLead = false) {
   if (!supabase) {
     return null
   }
 
-  const { data, error } = await supabase
-    .from('public_quote_leads')
-    .insert({
-      business_slug: businessSlug,
-      customer_name: lead.name,
-      service: lead.service,
-      property_details: lead.property,
-      timeline: lead.timeline,
-      budget: lead.budget,
-      notes: lead.notes,
-      quoted_price: estimateLead(lead),
-      status: lead.status,
-    })
-    .select()
-    .single()
+  const insertPayload = {
+    business_slug: businessSlug,
+    customer_name: lead.name,
+    service: lead.service,
+    property_details: lead.property,
+    timeline: lead.timeline,
+    budget: lead.budget,
+    notes: lead.notes,
+    quoted_price: estimateLead(lead),
+    status: lead.status,
+  }
+
+  if (returnSavedLead) {
+    const { data, error } = await supabase
+      .from('public_quote_leads')
+      .insert(insertPayload)
+      .select()
+      .single()
+
+    if (error) {
+      throw error
+    }
+
+    return mapQuoteLeadRow(data)
+  }
+
+  const { error } = await supabase.from('public_quote_leads').insert(insertPayload)
 
   if (error) {
     throw error
   }
 
-  return mapQuoteLeadRow(data)
+  return lead
 }
 
-async function updateSupabaseLeadStatus(id: string, status: LeadStatus) {
-  if (!supabase || id.startsWith('starter-') || id.startsWith('local-')) {
+async function updateSupabaseLeadStatus(id: string, businessSlug: string, status: LeadStatus) {
+  if (!supabase || id.startsWith('starter-') || id.startsWith('local-') || id === 'empty') {
     return
   }
 
@@ -199,10 +254,49 @@ async function updateSupabaseLeadStatus(id: string, status: LeadStatus) {
     .from('public_quote_leads')
     .update({ status })
     .eq('id', id)
+    .eq('business_slug', businessSlug)
 
   if (error) {
     throw error
   }
+}
+
+async function loadOrCreateProfile(session: Session) {
+  if (!supabase) {
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', session.user.id)
+    .maybeSingle()
+
+  if (error) {
+    throw error
+  }
+
+  if (data) {
+    return data
+  }
+
+  const emailName = session.user.email?.split('@')[0] ?? 'operator'
+  const fallbackSlug = `${slugify(emailName) || 'operator'}-${session.user.id.slice(0, 6)}`
+  const { data: createdProfile, error: createError } = await supabase
+    .from('profiles')
+    .insert({
+      id: session.user.id,
+      business_name: formatBusinessName(fallbackSlug),
+      business_slug: fallbackSlug,
+    })
+    .select()
+    .single()
+
+  if (createError) {
+    throw createError
+  }
+
+  return createdProfile
 }
 
 function App() {
@@ -212,12 +306,207 @@ function App() {
     return <QuoteRequestPage />
   }
 
-  return <OperatorDashboard />
+  return <OperatorApp />
 }
 
-function OperatorDashboard() {
-  const [leads, setLeads] = useState<Lead[]>(readStoredLeads)
-  const [selectedId, setSelectedId] = useState(() => readStoredLeads()[0]?.id ?? 'starter-1')
+function OperatorApp() {
+  const [session, setSession] = useState<Session | null | undefined>(
+    hasSupabaseConfig ? undefined : null,
+  )
+
+  useEffect(() => {
+    if (!supabase) {
+      return
+    }
+
+    void supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+    })
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+    })
+
+    return () => {
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  if (session === undefined) {
+    return <LoadingScreen />
+  }
+
+  if (hasSupabaseConfig && !session) {
+    return <AuthScreen />
+  }
+
+  return <OperatorDashboard session={session} />
+}
+
+function LoadingScreen() {
+  return (
+    <main className="auth-shell">
+      <section className="auth-card compact">
+        <span className="brand-mark">
+          <Sparkles size={18} />
+        </span>
+        <p className="eyebrow">Loading workspace</p>
+        <h1>Opening YardPilot.</h1>
+      </section>
+    </main>
+  )
+}
+
+function AuthScreen() {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signup')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [businessName, setBusinessName] = useState('Greenstack Lawn Co.')
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function submitAuth() {
+    if (!supabase || !email.trim() || password.length < 6) {
+      setMessage('Use an email and a password with at least 6 characters.')
+      return
+    }
+
+    setIsSubmitting(true)
+    setMessage('')
+
+    const slug = slugify(businessName) || slugify(email.split('@')[0]) || 'operator'
+    const result =
+      mode === 'signup'
+        ? await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                business_name: businessName,
+                business_slug: slug,
+              },
+              emailRedirectTo: window.location.origin,
+            },
+          })
+        : await supabase.auth.signInWithPassword({ email, password })
+
+    setIsSubmitting(false)
+
+    if (result.error) {
+      setMessage(result.error.message)
+      return
+    }
+
+    if (mode === 'signup' && !result.data.session) {
+      setMessage('Account created. Check your email to confirm, then sign in here.')
+      setMode('signin')
+      return
+    }
+
+    setMessage('Signed in. Opening your workspace.')
+  }
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-hero">
+        <div className="brand">
+          <span className="brand-mark">
+            <Sparkles size={18} />
+          </span>
+          <span>YardPilot</span>
+        </div>
+        <p className="eyebrow">Operator login</p>
+        <h1>One landscaper, one quote page, one private pipeline.</h1>
+        <p>
+          Create a workspace, share your quote link, and keep homeowner requests tied
+          to your own business instead of a shared demo board.
+        </p>
+      </section>
+
+      <section className="auth-card">
+        <div className="auth-toggle" aria-label="Authentication mode">
+          <button
+            className={mode === 'signup' ? 'active' : ''}
+            type="button"
+            onClick={() => setMode('signup')}
+          >
+            Create account
+          </button>
+          <button
+            className={mode === 'signin' ? 'active' : ''}
+            type="button"
+            onClick={() => setMode('signin')}
+          >
+            Sign in
+          </button>
+        </div>
+
+        <div className="panel-title">
+          <LockKeyhole size={18} />
+          <h2>{mode === 'signup' ? 'Start your operator workspace' : 'Welcome back'}</h2>
+        </div>
+
+        <div className="form-grid single">
+          {mode === 'signup' ? (
+            <label>
+              Business name
+              <input
+                value={businessName}
+                onChange={(event) => setBusinessName(event.target.value)}
+                placeholder="Greenstack Lawn Co."
+              />
+            </label>
+          ) : null}
+          <label>
+            Email
+            <input
+              autoComplete="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="At least 6 characters"
+            />
+          </label>
+        </div>
+
+        {message ? <p className="auth-message">{message}</p> : null}
+
+        <button
+          className="primary-action full"
+          type="button"
+          onClick={submitAuth}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? 'Working...' : mode === 'signup' ? 'Create workspace' : 'Sign in'}
+          <ArrowRight size={18} />
+        </button>
+      </section>
+    </main>
+  )
+}
+
+function OperatorDashboard({ session }: { session: Session | null }) {
+  const [leads, setLeads] = useState<Lead[]>(hasSupabaseConfig ? [] : readStoredLeads)
+  const [selectedId, setSelectedId] = useState(() =>
+    hasSupabaseConfig ? '' : readStoredLeads()[0]?.id ?? 'starter-1',
+  )
+  const [profile, setProfile] = useState<ProfileRow | null>(null)
+  const [profileForm, setProfileForm] = useState<ProfileForm>({
+    businessName: 'Greenstack Lawn Co.',
+    businessSlug: fallbackBusinessSlug,
+  })
   const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>(
     hasSupabaseConfig ? 'Supabase live' : 'Browser demo',
   )
@@ -225,28 +514,44 @@ function OperatorDashboard() {
   const [calendarConnected, setCalendarConnected] = useState(false)
   const [bookingStatus, setBookingStatus] = useState('Ready to book once the customer accepts.')
   const [form, setForm] = useState<LeadForm>(emptyLeadForm)
+  const [profileMessage, setProfileMessage] = useState('')
 
-  const selectedLead = leads.find((lead) => lead.id === selectedId) ?? leads[0]
+  const businessSlug = profile?.business_slug || profileForm.businessSlug || fallbackBusinessSlug
+  const businessName = profile?.business_name || profileForm.businessName || formatBusinessName(businessSlug)
+  const selectedLead = leads.find((lead) => lead.id === selectedId) ?? leads[0] ?? emptySelectedLead
   const estimatedPrice = useMemo(() => estimateLead(selectedLead), [selectedLead])
-  const quotePageUrl = `${window.location.origin}/quote/greenstack`
+  const quotePageUrl = `${window.location.origin}/quote/${businessSlug}`
+  const hasLeads = leads.length > 0
 
-  const closeRate = Math.round(
-    (leads.filter((lead) => lead.status === 'Won').length / leads.length) * 100,
-  )
+  const closeRate = leads.length
+    ? Math.round((leads.filter((lead) => lead.status === 'Won').length / leads.length) * 100)
+    : 0
 
   useEffect(() => {
     let ignore = false
 
-    async function loadLeads() {
-      if (!hasSupabaseConfig) {
+    async function loadWorkspace() {
+      if (!hasSupabaseConfig || !session) {
         return
       }
 
       try {
-        const remoteLeads = await loadSupabaseLeads()
-        if (!ignore && remoteLeads && remoteLeads.length > 0) {
+        const nextProfile = await loadOrCreateProfile(session)
+        if (!nextProfile || ignore) {
+          return
+        }
+
+        setProfile(nextProfile)
+        const loadedSlug = nextProfile.business_slug ?? fallbackBusinessSlug
+        setProfileForm({
+          businessName: nextProfile.business_name ?? formatBusinessName(loadedSlug),
+          businessSlug: loadedSlug,
+        })
+
+        const remoteLeads = await loadSupabaseLeads(loadedSlug)
+        if (!ignore && remoteLeads) {
           setLeads(remoteLeads)
-          setSelectedId(remoteLeads[0].id)
+          setSelectedId(remoteLeads[0]?.id ?? '')
           setPersistenceMode('Supabase live')
         }
       } catch {
@@ -256,12 +561,12 @@ function OperatorDashboard() {
       }
     }
 
-    void loadLeads()
+    void loadWorkspace()
 
     return () => {
       ignore = true
     }
-  }, [])
+  }, [session])
 
   function updateLeads(nextLeads: Lead[]) {
     setLeads(nextLeads)
@@ -285,7 +590,7 @@ function OperatorDashboard() {
     }
 
     try {
-      const remoteLead = await createSupabaseLead(nextLead)
+      const remoteLead = await createSupabaseLead(nextLead, businessSlug, true)
       const savedLead = remoteLead ?? nextLead
       updateLeads([savedLead, ...leads])
       setSelectedId(savedLead.id)
@@ -299,8 +604,52 @@ function OperatorDashboard() {
     setForm(emptyLeadForm)
   }
 
+  async function saveProfile() {
+    if (!supabase || !session) {
+      return
+    }
+
+    const cleanSlug = slugify(profileForm.businessSlug || profileForm.businessName)
+    if (!cleanSlug) {
+      setProfileMessage('Pick a simple quote page slug first.')
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({
+        business_name: profileForm.businessName || formatBusinessName(cleanSlug),
+        business_slug: cleanSlug,
+      })
+      .eq('id', session.user.id)
+      .select()
+      .single()
+
+    if (error) {
+      setProfileMessage(error.message)
+      return
+    }
+
+    setProfile(data)
+    const savedSlug = data.business_slug ?? cleanSlug
+    setProfileForm({
+      businessName: data.business_name ?? formatBusinessName(savedSlug),
+      businessSlug: savedSlug,
+    })
+    setProfileMessage('Workspace saved.')
+  }
+
+  async function copyQuoteLink() {
+    await navigator.clipboard.writeText(quotePageUrl)
+    setProfileMessage('Quote link copied.')
+  }
+
   async function markQuoted() {
-    await updateSupabaseLeadStatus(selectedLead.id, 'Quoted').catch(() => {
+    if (!hasLeads) {
+      return
+    }
+
+    await updateSupabaseLeadStatus(selectedLead.id, businessSlug, 'Quoted').catch(() => {
       setPersistenceMode('Supabase unavailable')
     })
     updateLeads(
@@ -319,12 +668,17 @@ function OperatorDashboard() {
   }
 
   async function bookLead() {
+    if (!hasLeads) {
+      setBookingStatus('Add or receive a lead before booking.')
+      return
+    }
+
     if (!calendarConnected) {
       setBookingStatus('Connect Google Calendar before creating a booking event.')
       return
     }
 
-    await updateSupabaseLeadStatus(selectedLead.id, 'Won').catch(() => {
+    await updateSupabaseLeadStatus(selectedLead.id, businessSlug, 'Won').catch(() => {
       setPersistenceMode('Supabase unavailable')
     })
     updateLeads(
@@ -337,9 +691,17 @@ function OperatorDashboard() {
     )
   }
 
-  const proposal = `Hi ${selectedLead.name}, thanks for reaching out. Based on your ${selectedLead.property} and the requested ${selectedLead.service.toLowerCase()}, I recommend starting at $${estimatedPrice}. This includes site prep, the core yard work, cleanup, and a final walkthrough. I can target ${selectedLead.timeline.toLowerCase()} if the slot is still open.`
+  async function signOut() {
+    await supabase?.auth.signOut()
+  }
 
-  const followUp = `Hi ${selectedLead.name}, just checking in on the ${selectedLead.service.toLowerCase()} quote for your property. I still have a couple of openings around ${selectedLead.timeline.toLowerCase()}, and I can get you on the schedule today if the $${estimatedPrice} estimate works for you.`
+  const proposal = hasLeads
+    ? `Hi ${selectedLead.name}, thanks for reaching out. Based on your ${selectedLead.property} and the requested ${selectedLead.service.toLowerCase()}, I recommend starting at $${estimatedPrice}. This includes site prep, the core yard work, cleanup, and a final walkthrough. I can target ${selectedLead.timeline.toLowerCase()} if the slot is still open.`
+    : 'Share your quote page or add a lead manually. YardPilot will draft the estimate and follow-up once a homeowner request lands here.'
+
+  const followUp = hasLeads
+    ? `Hi ${selectedLead.name}, just checking in on the ${selectedLead.service.toLowerCase()} quote for your property. I still have a couple of openings around ${selectedLead.timeline.toLowerCase()}, and I can get you on the schedule today if the $${estimatedPrice} estimate works for you.`
+    : 'No follow-up needed yet. New leads will appear in this private pipeline.'
 
   return (
     <main className="shell">
@@ -354,11 +716,17 @@ function OperatorDashboard() {
           <a href="#workspace">Workspace</a>
           <a href="#pricing">Pricing</a>
           <a href="#launch">Launch</a>
-          <a href="/quote/greenstack">Quote page</a>
+          <a href={quotePageUrl}>Quote page</a>
         </div>
-        <button className="icon-button" type="button" aria-label="Send proposal">
-          <Send size={18} />
-        </button>
+        {session ? (
+          <button className="icon-button" type="button" aria-label="Sign out" onClick={signOut}>
+            <LogOut size={18} />
+          </button>
+        ) : (
+          <button className="icon-button" type="button" aria-label="Send proposal">
+            <Send size={18} />
+          </button>
+        )}
       </nav>
 
       <section className="hero-section">
@@ -417,17 +785,60 @@ function OperatorDashboard() {
 
         <section className="quote-link-panel" aria-label="Shareable quote page">
           <div>
-            <p className="eyebrow">Live capability</p>
-            <h3>Share this quote page with homeowners.</h3>
+            <p className="eyebrow">Private workspace</p>
+            <h3>{businessName}</h3>
             <p>
-              Submissions are captured into the dashboard. Storage mode:{' '}
-              <strong>{persistenceMode}</strong>.
+              Submissions to <strong>/quote/{businessSlug}</strong> are captured into
+              this dashboard. Storage mode: <strong>{persistenceMode}</strong>.
             </p>
           </div>
-          <a className="primary-action" href={quotePageUrl}>
-            Open /quote/greenstack
-            <ArrowRight size={18} />
-          </a>
+          <div className="quote-actions">
+            <a className="primary-action" href={quotePageUrl}>
+              Open quote page
+              <ArrowRight size={18} />
+            </a>
+            <button className="secondary-action button" type="button" onClick={copyQuoteLink}>
+              <Copy size={17} />
+              Copy link
+            </button>
+          </div>
+        </section>
+
+        <section className="panel profile-panel" aria-label="Workspace settings">
+          <div className="panel-title">
+            <UserRound size={18} />
+            <h3>Workspace settings</h3>
+          </div>
+          <div className="form-grid profile-grid">
+            <label>
+              Business name
+              <input
+                value={profileForm.businessName}
+                onChange={(event) =>
+                  setProfileForm({
+                    ...profileForm,
+                    businessName: event.target.value,
+                    businessSlug: slugify(event.target.value) || profileForm.businessSlug,
+                  })
+                }
+                placeholder="Greenstack Lawn Co."
+              />
+            </label>
+            <label>
+              Quote page slug
+              <input
+                value={profileForm.businessSlug}
+                onChange={(event) =>
+                  setProfileForm({ ...profileForm, businessSlug: slugify(event.target.value) })
+                }
+                placeholder="greenstack"
+              />
+            </label>
+            <button className="secondary-action button" type="button" onClick={saveProfile}>
+              Save workspace
+            </button>
+          </div>
+          {profileMessage ? <p className="profile-message">{profileMessage}</p> : null}
         </section>
 
         <div className="app-grid">
@@ -451,20 +862,27 @@ function OperatorDashboard() {
               <h3 id="pipeline-title">Pipeline</h3>
             </div>
             <div className="lead-list">
-              {leads.map((lead) => (
-                <button
-                  className={`lead-row ${lead.id === selectedLead.id ? 'active' : ''}`}
-                  key={lead.id}
-                  onClick={() => setSelectedId(lead.id)}
-                  type="button"
-                >
-                  <span>
-                    <strong>{lead.name}</strong>
-                    <small>{lead.service}</small>
-                  </span>
-                  <em>{lead.status}</em>
-                </button>
-              ))}
+              {leads.length ? (
+                leads.map((lead) => (
+                  <button
+                    className={`lead-row ${lead.id === selectedLead.id ? 'active' : ''}`}
+                    key={lead.id}
+                    onClick={() => setSelectedId(lead.id)}
+                    type="button"
+                  >
+                    <span>
+                      <strong>{lead.name}</strong>
+                      <small>{lead.service}</small>
+                    </span>
+                    <em>{lead.status}</em>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-state">
+                  <strong>No leads yet</strong>
+                  <p>Share your quote page or add the first homeowner manually.</p>
+                </div>
+              )}
             </div>
           </section>
 
@@ -486,11 +904,16 @@ function OperatorDashboard() {
               <p>{followUp}</p>
             </div>
             <div className="button-row">
-              <button className="secondary-action button" type="button">
+              <button className="secondary-action button" type="button" disabled={!hasLeads}>
                 <Mail size={17} />
                 Email
               </button>
-              <button className="primary-action button" type="button" onClick={markQuoted}>
+              <button
+                className="primary-action button"
+                type="button"
+                onClick={markQuoted}
+                disabled={!hasLeads}
+              >
                 Mark quoted
                 <Check size={17} />
               </button>
@@ -607,6 +1030,8 @@ function OperatorDashboard() {
 }
 
 function QuoteRequestPage() {
+  const quoteSlug = getQuoteSlug()
+  const businessName = formatBusinessName(quoteSlug)
   const [form, setForm] = useState<LeadForm>(emptyLeadForm)
   const [submittedLead, setSubmittedLead] = useState<Lead | null>(null)
   const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>(
@@ -636,7 +1061,7 @@ function QuoteRequestPage() {
     }
 
     try {
-      const remoteLead = await createSupabaseLead(nextLead)
+      const remoteLead = await createSupabaseLead(nextLead, quoteSlug)
       const savedLead = remoteLead ?? nextLead
       const savedLeads = [savedLead, ...readStoredLeads()]
       saveStoredLeads(savedLeads)
@@ -657,7 +1082,7 @@ function QuoteRequestPage() {
           <span className="brand-mark">
             <Sparkles size={18} />
           </span>
-          <span>Greenstack Lawn Co.</span>
+          <span>{businessName}</span>
         </div>
         <div>
           <p className="eyebrow">Fast landscaping quotes</p>
@@ -683,9 +1108,6 @@ function QuoteRequestPage() {
                 A realistic starting estimate is ${estimateLead(submittedLead)}.
               </p>
               <p className="storage-note">Storage mode: {persistenceMode}</p>
-              <a className="secondary-action" href="/">
-                View operator dashboard
-              </a>
             </div>
           ) : (
             <>

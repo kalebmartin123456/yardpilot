@@ -255,7 +255,8 @@
 }
 
 .auth-message,
-.profile-message {
+.profile-message,
+.checkout-message {
   background: var(--soft);
   border: 1px solid rgba(28, 124, 114, 0.18);
   border-radius: 8px;
@@ -265,6 +266,11 @@
   line-height: 1.45;
   margin: 14px 0;
   padding: 11px 12px;
+}
+
+.checkout-message {
+  margin-bottom: 18px;
+  max-width: 780px;
 }
 
 .form-grid.single {

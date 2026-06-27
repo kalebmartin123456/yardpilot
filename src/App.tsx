@@ -24,6 +24,7 @@ import type { Database as SupabaseDatabase } from './lib/database.types'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
 
 type LeadStatus = 'New' | 'Quoted' | 'Followed up' | 'Won'
+type PlanKey = 'solo' | 'pro' | 'crew'
 type PersistenceMode = 'Browser demo' | 'Supabase live' | 'Supabase unavailable'
 type QuoteLeadRow = SupabaseDatabase['public']['Tables']['public_quote_leads']['Row']
 type ProfileRow = SupabaseDatabase['public']['Tables']['profiles']['Row']
@@ -149,6 +150,22 @@ function formatBusinessName(slug: string) {
 function getQuoteSlug() {
   const [, quotePath] = window.location.pathname.split('/quote/')
   return slugify(quotePath?.split('/')[0] ?? fallbackBusinessSlug) || fallbackBusinessSlug
+}
+
+function formatSubscriptionStatus(status?: string | null) {
+  if (status === 'pro_active' || status === 'active' || status === 'trialing') {
+    return 'Pro active'
+  }
+
+  if (status === 'past_due') {
+    return 'Past due'
+  }
+
+  if (status === 'inactive' || status === 'canceled' || status === 'unpaid') {
+    return 'Inactive'
+  }
+
+  return 'Trial'
 }
 
 function readStoredLeads() {
@@ -510,11 +527,13 @@ function OperatorDashboard({ session }: { session: Session | null }) {
   const [persistenceMode, setPersistenceMode] = useState<PersistenceMode>(
     hasSupabaseConfig ? 'Supabase live' : 'Browser demo',
   )
-  const [subscriptionStatus, setSubscriptionStatus] = useState<'Trial' | 'Pro active'>('Trial')
+  const [subscriptionStatus, setSubscriptionStatus] = useState('Trial')
   const [calendarConnected, setCalendarConnected] = useState(false)
   const [bookingStatus, setBookingStatus] = useState('Ready to book once the customer accepts.')
   const [form, setForm] = useState<LeadForm>(emptyLeadForm)
   const [profileMessage, setProfileMessage] = useState('')
+  const [checkoutMessage, setCheckoutMessage] = useState('')
+  const [checkoutPlan, setCheckoutPlan] = useState<PlanKey | null>(null)
 
   const businessSlug = profile?.business_slug || profileForm.businessSlug || fallbackBusinessSlug
   const businessName = profile?.business_name || profileForm.businessName || formatBusinessName(businessSlug)
@@ -542,6 +561,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
         }
 
         setProfile(nextProfile)
+        setSubscriptionStatus(formatSubscriptionStatus(nextProfile.subscription_status))
         const loadedSlug = nextProfile.business_slug ?? fallbackBusinessSlug
         setProfileForm({
           businessName: nextProfile.business_name ?? formatBusinessName(loadedSlug),
@@ -567,6 +587,19 @@ function OperatorDashboard({ session }: { session: Session | null }) {
       ignore = true
     }
   }, [session])
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search)
+    if (searchParams.get('checkout') === 'success') {
+      setCheckoutMessage('Checkout finished. Stripe will update this workspace after the webhook lands.')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+
+    if (searchParams.get('checkout') === 'cancelled') {
+      setCheckoutMessage('Checkout was cancelled. You can start again whenever you are ready.')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
 
   function updateLeads(nextLeads: Lead[]) {
     setLeads(nextLeads)
@@ -631,6 +664,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
     }
 
     setProfile(data)
+    setSubscriptionStatus(formatSubscriptionStatus(data.subscription_status))
     const savedSlug = data.business_slug ?? cleanSlug
     setProfileForm({
       businessName: data.business_name ?? formatBusinessName(savedSlug),
@@ -659,8 +693,37 @@ function OperatorDashboard({ session }: { session: Session | null }) {
     )
   }
 
-  function startCheckout() {
-    setSubscriptionStatus('Pro active')
+  async function startCheckout(plan: PlanKey) {
+    if (!session) {
+      setCheckoutMessage('Sign in before starting checkout.')
+      return
+    }
+
+    setCheckoutPlan(plan)
+    setCheckoutMessage('')
+
+    try {
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan }),
+      })
+      const data = (await response.json()) as { url?: string; error?: string }
+
+      if (!response.ok || !data.url) {
+        throw new Error(data.error ?? 'Checkout is unavailable.')
+      }
+
+      window.location.href = data.url
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Checkout is unavailable.'
+      setCheckoutMessage(message)
+    } finally {
+      setCheckoutPlan(null)
+    }
   }
 
   function connectCalendar() {
@@ -957,8 +1020,13 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               </p>
             </div>
             <strong>{subscriptionStatus}</strong>
-            <button className="primary-action full" type="button" onClick={startCheckout}>
-              Simulate checkout
+            <button
+              className="primary-action full"
+              type="button"
+              onClick={() => void startCheckout('pro')}
+              disabled={checkoutPlan !== null}
+            >
+              Start Checkout
               <ArrowRight size={18} />
             </button>
           </article>
@@ -1003,10 +1071,36 @@ function OperatorDashboard({ session }: { session: Session | null }) {
           <p className="eyebrow">Simple pricing</p>
           <h2>A plan a small operator can say yes to.</h2>
         </div>
+        {checkoutMessage ? <p className="checkout-message">{checkoutMessage}</p> : null}
         <div className="pricing-grid">
-          <PricingCard name="Solo" price="$19" items={['25 leads/month', 'AI proposal drafts', 'SMS/email copy']} />
-          <PricingCard name="Pro" price="$49" featured items={['Unlimited leads', 'Custom pricing rules', 'Follow-up sequences']} />
-          <PricingCard name="Crew" price="$99" items={['Team inbox', 'Saved templates', 'Revenue reporting']} />
+          <PricingCard
+            name="Solo"
+            plan="solo"
+            price="$19"
+            items={['25 leads/month', 'AI proposal drafts', 'SMS/email copy']}
+            onStart={startCheckout}
+            isLoading={checkoutPlan === 'solo'}
+            isDisabled={checkoutPlan !== null}
+          />
+          <PricingCard
+            name="Pro"
+            plan="pro"
+            price="$49"
+            featured
+            items={['Unlimited leads', 'Custom pricing rules', 'Follow-up sequences']}
+            onStart={startCheckout}
+            isLoading={checkoutPlan === 'pro'}
+            isDisabled={checkoutPlan !== null}
+          />
+          <PricingCard
+            name="Crew"
+            plan="crew"
+            price="$99"
+            items={['Team inbox', 'Saved templates', 'Revenue reporting']}
+            onStart={startCheckout}
+            isLoading={checkoutPlan === 'crew'}
+            isDisabled={checkoutPlan !== null}
+          />
         </div>
       </section>
 
@@ -1224,13 +1318,21 @@ function Metric({
 
 function PricingCard({
   name,
+  plan,
   price,
   items,
+  onStart,
+  isLoading,
+  isDisabled,
   featured = false,
 }: {
   name: string
+  plan: PlanKey
   price: string
   items: string[]
+  onStart: (plan: PlanKey) => Promise<void>
+  isLoading: boolean
+  isDisabled: boolean
   featured?: boolean
 }) {
   return (
@@ -1250,8 +1352,13 @@ function PricingCard({
           </li>
         ))}
       </ul>
-      <button className={featured ? 'primary-action full' : 'secondary-action full'} type="button">
-        Start
+      <button
+        className={featured ? 'primary-action full' : 'secondary-action full'}
+        type="button"
+        onClick={() => void onStart(plan)}
+        disabled={isDisabled}
+      >
+        {isLoading ? 'Opening Checkout...' : 'Start'}
       </button>
     </article>
   )

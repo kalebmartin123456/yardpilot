@@ -77,6 +77,16 @@ alter table public.bookings enable row level security;
 alter table public.pricing_rules enable row level security;
 alter table public.public_quote_leads enable row level security;
 
+drop policy if exists "Users can read own profile" on public.profiles;
+drop policy if exists "Users can update own profile" on public.profiles;
+drop policy if exists "Users can manage own leads" on public.leads;
+drop policy if exists "Users can manage own calendar connections" on public.calendar_connections;
+drop policy if exists "Users can manage own bookings" on public.bookings;
+drop policy if exists "Users can manage own pricing rules" on public.pricing_rules;
+drop policy if exists "Anyone can submit public quote leads" on public.public_quote_leads;
+drop policy if exists "Anyone can read public quote leads for demo" on public.public_quote_leads;
+drop policy if exists "Anyone can update public quote lead status for demo" on public.public_quote_leads;
+
 create policy "Users can read own profile"
   on public.profiles for select
   using (auth.uid() = id);

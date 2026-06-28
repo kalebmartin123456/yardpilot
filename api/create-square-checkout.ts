@@ -18,20 +18,17 @@ type SquarePaymentLinkResponse = {
   }>
 }
 
-const planConfig: Record<PlanKey, { amount: number; envName: string; label: string }> = {
+const planConfig: Record<PlanKey, { amount: number; label: string }> = {
   solo: {
     amount: 1900,
-    envName: 'SQUARE_SOLO_PLAN_VARIATION_ID',
     label: 'YardPilot Solo',
   },
   pro: {
     amount: 4900,
-    envName: 'SQUARE_PRO_PLAN_VARIATION_ID',
     label: 'YardPilot Pro',
   },
   crew: {
     amount: 9900,
-    envName: 'SQUARE_CREW_PLAN_VARIATION_ID',
     label: 'YardPilot Crew',
   },
 }
@@ -109,7 +106,6 @@ async function createSquarePaymentLink({
   const accessToken = getRequiredEnv('SQUARE_ACCESS_TOKEN')
   const locationId = getRequiredEnv('SQUARE_LOCATION_ID')
   const planDetails = planConfig[plan]
-  const subscriptionPlanVariationId = getRequiredEnv(planDetails.envName)
   const response = await fetch(`${getSquareBaseUrl()}/v2/online-checkout/payment-links`, {
     method: 'POST',
     headers: {
@@ -139,7 +135,6 @@ async function createSquarePaymentLink({
       },
       checkout_options: {
         redirect_url: `${origin}/?checkout=square-success`,
-        subscription_plan_id: subscriptionPlanVariationId,
       },
     }),
   })

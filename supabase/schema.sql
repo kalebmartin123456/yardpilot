@@ -6,12 +6,20 @@ create table if not exists public.profiles (
   business_slug text,
   stripe_customer_id text,
   stripe_subscription_id text,
+  square_customer_id text,
+  square_subscription_id text,
   subscription_status text not null default 'trial',
   created_at timestamptz not null default now()
 );
 
 alter table public.profiles
   add column if not exists business_slug text;
+
+alter table public.profiles
+  add column if not exists square_customer_id text;
+
+alter table public.profiles
+  add column if not exists square_subscription_id text;
 
 update public.profiles
 set business_slug = 'operator-' || left(id::text, 6)

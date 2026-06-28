@@ -590,8 +590,8 @@ function OperatorDashboard({ session }: { session: Session | null }) {
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search)
-    if (searchParams.get('checkout') === 'success') {
-      setCheckoutMessage('Checkout finished. Stripe will update this workspace after the webhook lands.')
+    if (searchParams.get('checkout') === 'square-success') {
+      setCheckoutMessage('Square checkout finished. The workspace will update after the webhook lands.')
       window.history.replaceState({}, '', window.location.pathname)
     }
 
@@ -703,7 +703,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
     setCheckoutMessage('')
 
     try {
-      const response = await fetch('/api/create-checkout-session', {
+      const response = await fetch('/api/create-square-checkout', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -714,12 +714,12 @@ function OperatorDashboard({ session }: { session: Session | null }) {
       const data = (await response.json()) as { url?: string; error?: string }
 
       if (!response.ok || !data.url) {
-        throw new Error(data.error ?? 'Checkout is unavailable.')
+        throw new Error(data.error ?? 'Square checkout is unavailable.')
       }
 
       window.location.href = data.url
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Checkout is unavailable.'
+      const message = error instanceof Error ? error.message : 'Square checkout is unavailable.'
       setCheckoutMessage(message)
     } finally {
       setCheckoutPlan(null)
@@ -1013,10 +1013,10 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               <CreditCard size={20} />
             </div>
             <div>
-              <h3>Stripe subscription</h3>
+              <h3>Square subscription</h3>
               <p>
-                Use Checkout for Solo, Pro, and Crew plans. Stripe hosts the payment page
-                and sends a webhook when the subscription becomes active.
+                Use Square-hosted checkout for Solo, Pro, and Crew plans. Square handles
+                payment, then sends a webhook when the workspace should activate.
               </p>
             </div>
             <strong>{subscriptionStatus}</strong>

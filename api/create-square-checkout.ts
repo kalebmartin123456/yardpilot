@@ -1,5 +1,6 @@
+/// <reference types="node" />
+
 import { createClient } from '@supabase/supabase-js'
-import Stripe from 'stripe'
 
 type PlanKey = 'solo' | 'pro' | 'crew'
 
@@ -8,10 +9,31 @@ type SupabaseUserResponse = {
   email?: string
 }
 
-const priceEnvByPlan: Record<PlanKey, string> = {
-  solo: 'STRIPE_SOLO_PRICE_ID',
-  pro: 'STRIPE_PRO_PRICE_ID',
-  crew: 'STRIPE_CREW_PRICE_ID',
+type SquarePaymentLinkResponse = {
+  payment_link?: {
+    url?: string
+  }
+  errors?: Array<{
+    detail?: string
+  }>
+}
+
+const planConfig: Record<PlanKey, { amount: number; envName: string; label: string }> = {
+  solo: {
+    amount: 1900,
+    envName: 'SQUARE_SOLO_PLAN_VARIATION_ID',
+    label: 'YardPilot Solo',
+  },
+  pro: {
+    amount: 4900,
+    envName: 'SQUARE_PRO_PLAN_VARIATION_ID',
+    label: 'YardPilot Pro',
+  },
+  crew: {
+    amount: 9900,
+    envName: 'SQUARE_CREW_PLAN_VARIATION_ID',
+    label: 'YardPilot Crew',
+  },
 }
 
 function getRequiredEnv(name: string) {
@@ -21,6 +43,12 @@ function getRequiredEnv(name: string) {
   }
 
   return value
+}
+
+function getSquareBaseUrl() {
+  return process.env.SQUARE_ENVIRONMENT === 'production'
+    ? 'https://connect.squareup.com'
+    : 'https://connect.squareupsandbox.com'
 }
 
 function getRequestOrigin(request: { headers: Record<string, string | string[] | undefined> }) {
@@ -69,6 +97,61 @@ async function verifySupabaseUser(supabaseUrl: string, token: string) {
   return (await response.json()) as SupabaseUserResponse
 }
 
+async function createSquarePaymentLink({
+  origin,
+  plan,
+  userId,
+}: {
+  origin: string
+  plan: PlanKey
+  userId: string
+}) {
+  const accessToken = getRequiredEnv('SQUARE_ACCESS_TOKEN')
+  const locationId = getRequiredEnv('SQUARE_LOCATION_ID')
+  const planDetails = planConfig[plan]
+  const subscriptionPlanVariationId = getRequiredEnv(planDetails.envName)
+  const response = await fetch(`${getSquareBaseUrl()}/v2/online-checkout/payment-links`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'Square-Version': process.env.SQUARE_VERSION ?? '2026-06-18',
+    },
+    body: JSON.stringify({
+      idempotency_key: `${userId}-${plan}-${Date.now()}`,
+      order: {
+        location_id: locationId,
+        reference_id: userId,
+        line_items: [
+          {
+            name: planDetails.label,
+            quantity: '1',
+            base_price_money: {
+              amount: planDetails.amount,
+              currency: 'USD',
+            },
+          },
+        ],
+        metadata: {
+          supabase_user_id: userId,
+          plan,
+        },
+      },
+      checkout_options: {
+        redirect_url: `${origin}/?checkout=square-success`,
+        subscription_plan_id: subscriptionPlanVariationId,
+      },
+    }),
+  })
+  const data = (await response.json()) as SquarePaymentLinkResponse
+
+  if (!response.ok || !data.payment_link?.url) {
+    throw new Error(data.errors?.[0]?.detail ?? 'Square checkout is unavailable.')
+  }
+
+  return data.payment_link.url
+}
+
 export default async function handler(
   request: {
     method?: string
@@ -78,7 +161,6 @@ export default async function handler(
   response: {
     status: (statusCode: number) => {
       json: (body: unknown) => void
-      end: () => void
     }
   },
 ) {
@@ -88,7 +170,6 @@ export default async function handler(
   }
 
   try {
-    const stripeSecretKey = getRequiredEnv('STRIPE_SECRET_KEY')
     const supabaseUrl = getRequiredEnv('VITE_SUPABASE_URL')
     const supabaseServiceRoleKey = getRequiredEnv('SUPABASE_SERVICE_ROLE_KEY')
     const body = await readJsonBody(request)
@@ -99,10 +180,15 @@ export default async function handler(
       return
     }
 
-    const priceId = getRequiredEnv(priceEnvByPlan[plan as PlanKey])
     const token = getBearerToken(request.headers.authorization)
     if (!token) {
       response.status(401).json({ error: 'Sign in before starting checkout.' })
+      return
+    }
+
+    const user = await verifySupabaseUser(supabaseUrl, token)
+    if (!user) {
+      response.status(401).json({ error: 'Could not verify your session.' })
       return
     }
 
@@ -112,63 +198,20 @@ export default async function handler(
         persistSession: false,
       },
     })
-    const user = await verifySupabaseUser(supabaseUrl, token)
-
-    if (!user) {
-      response.status(401).json({ error: 'Could not verify your session.' })
-      return
-    }
-
-    const { data: profile } = await supabaseAdmin
-      .from('profiles')
-      .select('business_name, business_slug, stripe_customer_id')
-      .eq('id', user.id)
-      .maybeSingle()
-
-    const stripe = new Stripe(stripeSecretKey)
-    const customerId =
-      profile?.stripe_customer_id ??
-      (
-        await stripe.customers.create({
-          email: user.email ?? undefined,
-          name: profile?.business_name ?? undefined,
-          metadata: {
-            supabase_user_id: user.id,
-            business_slug: profile?.business_slug ?? '',
-          },
-        })
-      ).id
-
-    if (!profile?.stripe_customer_id) {
-      await supabaseAdmin
-        .from('profiles')
-        .update({ stripe_customer_id: customerId })
-        .eq('id', user.id)
-    }
-
-    const origin = getRequestOrigin(request)
-    const checkoutSession = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      customer: customerId,
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/?checkout=success`,
-      cancel_url: `${origin}/?checkout=cancelled`,
-      client_reference_id: user.id,
-      metadata: {
-        supabase_user_id: user.id,
-        plan,
-      },
-      subscription_data: {
-        metadata: {
-          supabase_user_id: user.id,
-          plan,
-        },
-      },
+    const url = await createSquarePaymentLink({
+      origin: getRequestOrigin(request),
+      plan: plan as PlanKey,
+      userId: user.id,
     })
 
-    response.status(200).json({ url: checkoutSession.url })
+    await supabaseAdmin
+      .from('profiles')
+      .update({ subscription_status: 'checkout_started' })
+      .eq('id', user.id)
+
+    response.status(200).json({ url })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Checkout is unavailable.'
+    const message = error instanceof Error ? error.message : 'Square checkout is unavailable.'
     const statusCode = message.includes('not configured') ? 501 : 500
     response.status(statusCode).json({ error: message })
   }

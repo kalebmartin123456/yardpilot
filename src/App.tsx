@@ -13,7 +13,9 @@ import {
   LockKeyhole,
   LogOut,
   Mail,
+  MapPin,
   MessageSquareText,
+  Phone,
   Send,
   Sparkles,
   UserRound,
@@ -32,20 +34,28 @@ type ProfileRow = SupabaseDatabase['public']['Tables']['profiles']['Row']
 type Lead = {
   id: string
   name: string
+  phone: string
+  address: string
+  source: string
   service: string
   property: string
   timeline: string
   budget: string
+  photoNote: string
   notes: string
   status: LeadStatus
 }
 
 type LeadForm = {
   name: string
+  phone: string
+  address: string
+  source: string
   service: string
   property: string
   timeline: string
   budget: string
+  photoNote: string
   notes: string
 }
 
@@ -67,10 +77,14 @@ const servicePrices: Record<string, number> = {
 
 const emptyLeadForm: LeadForm = {
   name: '',
+  phone: '',
+  address: '',
+  source: 'Website',
   service: 'Spring cleanup',
   property: '',
   timeline: '',
   budget: '',
+  photoNote: '',
   notes: '',
 }
 
@@ -78,30 +92,42 @@ const starterLeads: Lead[] = [
   {
     id: 'starter-1',
     name: 'Maya Chen',
+    phone: '(555) 241-0184',
+    address: '1248 Maple Ridge Dr',
+    source: 'Facebook',
     service: 'Spring cleanup',
     property: '0.25 acre corner lot',
     timeline: 'This weekend',
     budget: '$450',
+    photoNote: 'Back beds are overgrown and leaves are piled along the fence.',
     notes: 'Leaf cleanup, bed edging, first mow, and haul-away after winter.',
     status: 'Quoted',
   },
   {
     id: 'starter-2',
     name: 'Jordan Price',
+    phone: '(555) 510-4920',
+    address: '88 Willow Ct',
+    source: 'Google',
     service: 'Weekly mowing',
     property: 'Small front and back yard',
     timeline: 'Friday afternoon',
     budget: '$55/visit',
+    photoNote: '',
     notes: 'Wants recurring mowing, trimming, and cleanup around fence line.',
     status: 'New',
   },
   {
     id: 'starter-3',
     name: 'Ari Lopez',
+    phone: '(555) 774-1622',
+    address: '3126 Garden View Ln',
+    source: 'Referral',
     service: 'Mulch install',
     property: 'Six front-yard beds',
     timeline: 'Next week',
     budget: '$900',
+    photoNote: 'Prefers dark brown mulch and wants the front refreshed before guests arrive.',
     notes: 'Needs weed barrier refresh, dark brown mulch, and clean bed edges.',
     status: 'Followed up',
   },
@@ -110,10 +136,14 @@ const starterLeads: Lead[] = [
 const emptySelectedLead: Lead = {
   id: 'empty',
   name: 'New lead',
+  phone: '',
+  address: '',
+  source: 'Website',
   service: 'Spring cleanup',
   property: 'No property selected yet',
   timeline: 'Flexible',
   budget: 'Not provided',
+  photoNote: '',
   notes: 'Share your quote page or add a lead to start.',
   status: 'New',
 }
@@ -168,6 +198,76 @@ function formatSubscriptionStatus(status?: string | null) {
   return 'Trial'
 }
 
+function parseLeadMeta(notes?: string | null) {
+  const fallback = notes?.trim() || ''
+  const meta = {
+    phone: '',
+    address: '',
+    source: '',
+    photoNote: '',
+    customerNotes: fallback,
+  }
+
+  if (!fallback.includes(':')) {
+    return meta
+  }
+
+  const lines = fallback.split('\n')
+  let bodyStart = 0
+
+  for (const [index, line] of lines.entries()) {
+    const [label, ...rest] = line.split(':')
+    const value = rest.join(':').trim()
+    const cleanLabel = label.trim().toLowerCase()
+
+    if (cleanLabel === 'phone') {
+      meta.phone = value
+      bodyStart = index + 1
+      continue
+    }
+
+    if (cleanLabel === 'address') {
+      meta.address = value
+      bodyStart = index + 1
+      continue
+    }
+
+    if (cleanLabel === 'source') {
+      meta.source = value
+      bodyStart = index + 1
+      continue
+    }
+
+    if (cleanLabel === 'photo note') {
+      meta.photoNote = value
+      bodyStart = index + 1
+      continue
+    }
+
+    if (!line.trim()) {
+      bodyStart = index + 1
+      continue
+    }
+
+    break
+  }
+
+  meta.customerNotes = lines.slice(bodyStart).join('\n').trim() || 'No extra notes yet.'
+  return meta
+}
+
+function buildStoredLeadNotes(lead: Pick<Lead, 'phone' | 'address' | 'source' | 'photoNote' | 'notes'>) {
+  const detailLines = [
+    lead.phone ? `Phone: ${lead.phone}` : '',
+    lead.address ? `Address: ${lead.address}` : '',
+    lead.source ? `Source: ${lead.source}` : '',
+    lead.photoNote ? `Photo note: ${lead.photoNote}` : '',
+  ].filter(Boolean)
+  const customerNotes = lead.notes.trim() || 'No extra notes yet.'
+
+  return detailLines.length ? `${detailLines.join('\n')}\n\n${customerNotes}` : customerNotes
+}
+
 function readStoredLeads() {
   if (typeof window === 'undefined') {
     return starterLeads
@@ -180,7 +280,18 @@ function readStoredLeads() {
     }
 
     const parsed = JSON.parse(saved) as Lead[]
-    const normalized = parsed.map((lead) => ({ ...lead, id: String(lead.id) }))
+    const normalized = parsed.map((lead) => {
+      const meta = parseLeadMeta(lead.notes)
+      return {
+        ...lead,
+        id: String(lead.id),
+        phone: lead.phone ?? meta.phone,
+        address: lead.address ?? meta.address,
+        source: lead.source ?? meta.source ?? 'Website',
+        photoNote: lead.photoNote ?? meta.photoNote,
+        notes: meta.customerNotes || lead.notes,
+      }
+    })
     return normalized.length > 0 ? normalized : starterLeads
   } catch {
     return starterLeads
@@ -192,14 +303,20 @@ function saveStoredLeads(nextLeads: Lead[]) {
 }
 
 function mapQuoteLeadRow(row: QuoteLeadRow): Lead {
+  const meta = parseLeadMeta(row.notes)
+
   return {
     id: row.id,
     name: row.customer_name,
+    phone: meta.phone,
+    address: meta.address,
+    source: meta.source || 'Website',
     service: row.service,
     property: row.property_details,
     timeline: row.timeline,
     budget: row.budget ?? 'Not provided',
-    notes: row.notes ?? 'No extra notes yet.',
+    photoNote: meta.photoNote,
+    notes: meta.customerNotes || 'No extra notes yet.',
     status: row.status === 'Lost' ? 'New' : row.status,
   }
 }
@@ -234,7 +351,7 @@ async function createSupabaseLead(lead: Lead, businessSlug: string, returnSavedL
     property_details: lead.property,
     timeline: lead.timeline,
     budget: lead.budget,
-    notes: lead.notes,
+    notes: buildStoredLeadNotes(lead),
     quoted_price: estimateLead(lead),
     status: lead.status,
   }
@@ -541,10 +658,18 @@ function OperatorDashboard({ session }: { session: Session | null }) {
   const estimatedPrice = useMemo(() => estimateLead(selectedLead), [selectedLead])
   const quotePageUrl = `${window.location.origin}/quote/${businessSlug}`
   const hasLeads = leads.length > 0
-
-  const closeRate = leads.length
-    ? Math.round((leads.filter((lead) => lead.status === 'Won').length / leads.length) * 100)
-    : 0
+  const needsReply = leads.filter((lead) => lead.status === 'New').length
+  const followUpDue = leads.filter((lead) => lead.status === 'Quoted').length
+  const capturedValue = leads.reduce((total, lead) => total + estimateLead(lead), 0)
+  const selectedAddress = selectedLead.address || selectedLead.property
+  const nextTouch =
+    selectedLead.status === 'New'
+      ? 'Reply now'
+      : selectedLead.status === 'Quoted'
+        ? 'Follow up today'
+        : selectedLead.status === 'Followed up'
+          ? 'Nudge tomorrow'
+          : 'Booked'
 
   useEffect(() => {
     let ignore = false
@@ -614,10 +739,14 @@ function OperatorDashboard({ session }: { session: Session | null }) {
     const nextLead: Lead = {
       id: `local-${Date.now()}`,
       name: form.name,
+      phone: form.phone,
+      address: form.address,
+      source: form.source,
       service: form.service,
       property: form.property,
       timeline: form.timeline || 'Flexible',
       budget: form.budget || 'Not provided',
+      photoNote: form.photoNote,
       notes: form.notes || 'No extra notes yet.',
       status: 'New',
     }
@@ -678,19 +807,36 @@ function OperatorDashboard({ session }: { session: Session | null }) {
     setProfileMessage('Quote link copied.')
   }
 
-  async function markQuoted() {
+  async function copyMessage(message: string, label: string) {
     if (!hasLeads) {
       return
     }
 
-    await updateSupabaseLeadStatus(selectedLead.id, businessSlug, 'Quoted').catch(() => {
+    await navigator.clipboard.writeText(message)
+    setProfileMessage(`${label} copied.`)
+  }
+
+  async function markLeadStatus(status: LeadStatus) {
+    if (!hasLeads) {
+      return
+    }
+
+    await updateSupabaseLeadStatus(selectedLead.id, businessSlug, status).catch(() => {
       setPersistenceMode('Supabase unavailable')
     })
     updateLeads(
       leads.map((lead) =>
-        lead.id === selectedLead.id ? { ...lead, status: 'Quoted' } : lead,
+        lead.id === selectedLead.id ? { ...lead, status } : lead,
       ),
     )
+  }
+
+  async function markQuoted() {
+    await markLeadStatus('Quoted')
+  }
+
+  async function markFollowedUp() {
+    await markLeadStatus('Followed up')
   }
 
   async function startCheckout(plan: PlanKey) {
@@ -759,11 +905,11 @@ function OperatorDashboard({ session }: { session: Session | null }) {
   }
 
   const proposal = hasLeads
-    ? `Hi ${selectedLead.name}, thanks for reaching out. Based on your ${selectedLead.property} and the requested ${selectedLead.service.toLowerCase()}, I recommend starting at $${estimatedPrice}. This includes site prep, the core yard work, cleanup, and a final walkthrough. I can target ${selectedLead.timeline.toLowerCase()} if the slot is still open.`
+    ? `Hi ${selectedLead.name}, thanks for the ${selectedLead.service.toLowerCase()} request${selectedLead.source ? ` from ${selectedLead.source}` : ''}. Based on ${selectedAddress}, I would start this at $${estimatedPrice}. That includes the core yard work, cleanup, and a quick final walkthrough. I can target ${selectedLead.timeline.toLowerCase()} if that still works for you.`
     : 'Share your quote page or add a lead manually. YardPilot will draft the estimate and follow-up once a homeowner request lands here.'
 
   const followUp = hasLeads
-    ? `Hi ${selectedLead.name}, just checking in on the ${selectedLead.service.toLowerCase()} quote for your property. I still have a couple of openings around ${selectedLead.timeline.toLowerCase()}, and I can get you on the schedule today if the $${estimatedPrice} estimate works for you.`
+    ? `Hi ${selectedLead.name}, quick follow-up on the ${selectedLead.service.toLowerCase()} quote for ${selectedAddress}. I still have room around ${selectedLead.timeline.toLowerCase()}, and I can get you on the schedule if the $${estimatedPrice} estimate works.`
     : 'No follow-up needed yet. New leads will appear in this private pipeline.'
 
   return (
@@ -794,12 +940,12 @@ function OperatorDashboard({ session }: { session: Session | null }) {
 
       <section className="hero-section">
         <div className="hero-copy">
-          <p className="eyebrow">Quote-to-booking pages for landscapers</p>
-          <h1>Turn yard requests into booked jobs.</h1>
+          <p className="eyebrow">Speed-to-lead for landscapers</p>
+          <h1>Reply before the next crew wins the job.</h1>
           <p>
-            YardPilot gives solo landscapers a self-serve quote page, instant
-            estimate drafts, follow-up copy, payment status, and calendar booking
-            without forcing them into a heavy CRM.
+            YardPilot captures every yard request, turns it into a quote-ready SMS,
+            tracks who still needs a follow-up, and helps a solo operator win one
+            more job without living in a heavy CRM.
           </p>
           <div className="hero-actions">
             <a className="primary-action" href={quotePageUrl}>
@@ -836,14 +982,14 @@ function OperatorDashboard({ session }: { session: Session | null }) {
       <section className="workspace" id="workspace">
         <div className="section-heading">
           <p className="eyebrow">Operator dashboard</p>
-          <h2>The fastest path from homeowner interest to a scheduled yard job.</h2>
+          <h2>A paid product because missed replies cost real jobs.</h2>
         </div>
 
         <div className="metric-grid">
-          <Metric icon={<ClipboardList size={18} />} label="Active leads" value={leads.length.toString()} />
+          <Metric icon={<MessageSquareText size={18} />} label="Needs reply" value={needsReply.toString()} />
           <Metric icon={<DollarSign size={18} />} label="Selected quote" value={`$${estimatedPrice}`} />
-          <Metric icon={<CalendarClock size={18} />} label="Fastest slot" value="Today" />
-          <Metric icon={<Check size={18} />} label="Close rate" value={`${closeRate}%`} />
+          <Metric icon={<CalendarClock size={18} />} label="Follow-up due" value={followUpDue.toString()} />
+          <Metric icon={<Check size={18} />} label="Captured value" value={`$${capturedValue}`} />
         </div>
 
         <section className="quote-link-panel" aria-label="Shareable quote page">
@@ -864,6 +1010,24 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               <Copy size={17} />
               Copy link
             </button>
+          </div>
+        </section>
+
+        <section className="value-panel" aria-label="Why YardPilot is worth paying for">
+          <div>
+            <p className="eyebrow">$20 defense</p>
+            <h3>One recovered cleanup can pay for more than a year.</h3>
+            <p>
+              If this helps a landscaper answer one $375 spring cleanup before
+              another company does, the Solo plan has paid for itself many times
+              over. The product promise is faster replies, cleaner follow-up, and
+              fewer leads slipping through.
+            </p>
+          </div>
+          <div className="value-math">
+            <span>Selected lead value</span>
+            <strong>${estimatedPrice}</strong>
+            <small>Break-even at $20/mo: about one saved job a year.</small>
           </div>
         </section>
 
@@ -935,7 +1099,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
                   >
                     <span>
                       <strong>{lead.name}</strong>
-                      <small>{lead.service}</small>
+                      <small>{lead.service} - {lead.timeline}</small>
                     </span>
                     <em>{lead.status}</em>
                   </button>
@@ -958,6 +1122,17 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               <span>{selectedLead.property}</span>
               <strong>${estimatedPrice}</strong>
             </div>
+            <div className="lead-meta">
+              <span>
+                <Phone size={15} />
+                {selectedLead.phone || 'No phone yet'}
+              </span>
+              <span>
+                <MapPin size={15} />
+                {selectedAddress}
+              </span>
+              <span>{nextTouch}</span>
+            </div>
             <p className="generated-copy">{proposal}</p>
             <div className="copy-block">
               <div>
@@ -967,9 +1142,23 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               <p>{followUp}</p>
             </div>
             <div className="button-row">
-              <button className="secondary-action button" type="button" disabled={!hasLeads}>
-                <Mail size={17} />
-                Email
+              <button
+                className="secondary-action button"
+                type="button"
+                onClick={() => void copyMessage(proposal, 'Quote SMS')}
+                disabled={!hasLeads}
+              >
+                <Copy size={17} />
+                Copy quote
+              </button>
+              <button
+                className="secondary-action button"
+                type="button"
+                onClick={() => void copyMessage(followUp, 'Follow-up SMS')}
+                disabled={!hasLeads}
+              >
+                <MessageSquareText size={17} />
+                Copy follow-up
               </button>
               <button
                 className="primary-action button"
@@ -979,6 +1168,15 @@ function OperatorDashboard({ session }: { session: Session | null }) {
               >
                 Mark quoted
                 <Check size={17} />
+              </button>
+              <button
+                className="secondary-action button"
+                type="button"
+                onClick={markFollowedUp}
+                disabled={!hasLeads}
+              >
+                <Mail size={17} />
+                Followed up
               </button>
             </div>
           </section>
@@ -1015,8 +1213,9 @@ function OperatorDashboard({ session }: { session: Session | null }) {
             <div>
               <h3>Square subscription</h3>
               <p>
-                Use Square-hosted checkout for Solo, Pro, and Crew plans. Square handles
-                payment, then sends a webhook when the workspace should activate.
+                Use Square-hosted checkout for Solo, Pro, and Crew plans when you
+                are ready to turn on paid workspaces. The app already has checkout
+                and webhook plumbing around the operator account.
               </p>
             </div>
             <strong>{subscriptionStatus}</strong>
@@ -1077,7 +1276,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
             name="Solo"
             plan="solo"
             price="$19"
-            items={['25 leads/month', 'AI proposal drafts', 'SMS/email copy']}
+            items={['Unlimited quote requests', 'Quote-ready SMS replies', 'Follow-up queue']}
             onStart={startCheckout}
             isLoading={checkoutPlan === 'solo'}
             isDisabled={checkoutPlan !== null}
@@ -1087,7 +1286,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
             plan="pro"
             price="$49"
             featured
-            items={['Unlimited leads', 'Custom pricing rules', 'Follow-up sequences']}
+            items={['Custom pricing rules', 'Square checkout links', 'Calendar booking']}
             onStart={startCheckout}
             isLoading={checkoutPlan === 'pro'}
             isDisabled={checkoutPlan !== null}
@@ -1096,7 +1295,7 @@ function OperatorDashboard({ session }: { session: Session | null }) {
             name="Crew"
             plan="crew"
             price="$99"
-            items={['Team inbox', 'Saved templates', 'Revenue reporting']}
+            items={['Team lead inbox', 'Saved service templates', 'Revenue reporting']}
             onStart={startCheckout}
             isLoading={checkoutPlan === 'crew'}
             isDisabled={checkoutPlan !== null}
@@ -1107,16 +1306,17 @@ function OperatorDashboard({ session }: { session: Session | null }) {
       <section className="launch-section" id="launch">
         <div>
           <p className="eyebrow">Next move</p>
-          <h2>Launch with one niche, then widen.</h2>
+          <h2>Sell the recovered job, not the software.</h2>
           <p>
-            Start with spring cleanup and mulch quotes for local landscapers, get ten
-            operators using the booking flow, then expand into mowing, aeration, and installs.
+            Start with spring cleanup and mulch quotes for local landscapers. The
+            pitch is simple: YardPilot catches the lead, writes the reply, reminds
+            you to follow up, and needs to save only one job to be worth it.
           </p>
         </div>
         <ol>
-          <li>Send the live quote page to one test homeowner.</li>
-          <li>DM 100 local landscapers with a direct quote-page offer.</li>
-          <li>Charge the first users after setup, not after perfection.</li>
+          <li>Test it on one real Nana&apos;s Bloomers or landscaping request.</li>
+          <li>DM 25 landscapers with the one-job-pays-for-it offer.</li>
+          <li>Charge $19 when the quote page and follow-up queue are useful.</li>
         </ol>
       </section>
     </main>
@@ -1135,7 +1335,7 @@ function QuoteRequestPage() {
   const previewPrice = estimateLead({
     service: form.service,
     property: form.property,
-    notes: form.notes,
+    notes: `${form.notes} ${form.photoNote}`,
   })
 
   async function submitQuoteRequest() {
@@ -1146,10 +1346,14 @@ function QuoteRequestPage() {
     const nextLead: Lead = {
       id: `local-${Date.now()}`,
       name: form.name,
+      phone: form.phone,
+      address: form.address,
+      source: form.source,
       service: form.service,
       property: form.property,
       timeline: form.timeline || 'Flexible',
       budget: form.budget || 'Not provided',
+      photoNote: form.photoNote,
       notes: form.notes || 'No extra notes yet.',
       status: 'New',
     }
@@ -1179,11 +1383,12 @@ function QuoteRequestPage() {
           <span>{businessName}</span>
         </div>
         <div>
-          <p className="eyebrow">Fast landscaping quotes</p>
-          <h1>Tell us about your yard. Get a clean estimate fast.</h1>
+          <p className="eyebrow">Fast landscaping replies</p>
+          <h1>Tell us what you need. Get a real reply before crews book out.</h1>
           <p>
-            Request mowing, cleanup, mulch, aeration, or a small install. Your
-            request goes straight into YardPilot so the operator can quote and book it.
+            Share the service, address, phone number, and yard details once. Your
+            request goes straight to the operator with enough context to quote and
+            schedule without a long back-and-forth.
           </p>
         </div>
       </section>
@@ -1252,7 +1457,23 @@ function LeadFields({
         />
       </label>
       <label>
-        Property
+        Phone
+        <input
+          value={form.phone}
+          onChange={(event) => setForm({ ...form, phone: event.target.value })}
+          placeholder="(555) 123-4567"
+        />
+      </label>
+      <label>
+        Address
+        <input
+          value={form.address}
+          onChange={(event) => setForm({ ...form, address: event.target.value })}
+          placeholder="1248 Maple Ridge Dr"
+        />
+      </label>
+      <label>
+        Yard details
         <input
           value={form.property}
           onChange={(event) => setForm({ ...form, property: event.target.value })}
@@ -1271,6 +1492,20 @@ function LeadFields({
         </select>
       </label>
       <label>
+        Lead source
+        <select
+          value={form.source}
+          onChange={(event) => setForm({ ...form, source: event.target.value })}
+        >
+          <option>Website</option>
+          <option>Google</option>
+          <option>Facebook</option>
+          <option>Text message</option>
+          <option>Referral</option>
+          <option>Door hanger</option>
+        </select>
+      </label>
+      <label>
         Timeline
         <input
           value={form.timeline}
@@ -1284,6 +1519,14 @@ function LeadFields({
           value={form.budget}
           onChange={(event) => setForm({ ...form, budget: event.target.value })}
           placeholder="$450"
+        />
+      </label>
+      <label className="wide">
+        Photo or access note
+        <input
+          value={form.photoNote}
+          onChange={(event) => setForm({ ...form, photoNote: event.target.value })}
+          placeholder="Gate code, photo link, mulch color, pile location..."
         />
       </label>
       <label className="wide">

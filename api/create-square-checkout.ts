@@ -111,7 +111,7 @@ async function createSquarePaymentLink({
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
-      'Square-Version': process.env.SQUARE_VERSION ?? '2026-06-18',
+      'Square-Version': process.env.SQUARE_VERSION ?? '2026-05-20',
     },
     body: JSON.stringify({
       idempotency_key: `${userId}-${plan}-${Date.now()}`,

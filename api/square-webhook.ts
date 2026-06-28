@@ -102,7 +102,7 @@ async function retrieveOrder(orderId: string) {
   const response = await fetch(`${getSquareBaseUrl()}/v2/orders/${orderId}`, {
     headers: {
       Authorization: `Bearer ${getRequiredEnv('SQUARE_ACCESS_TOKEN')}`,
-      'Square-Version': process.env.SQUARE_VERSION ?? '2026-06-18',
+      'Square-Version': process.env.SQUARE_VERSION ?? '2026-05-20',
     },
   })
 
